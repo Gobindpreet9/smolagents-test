@@ -1,4 +1,3 @@
-import re
 from smolagents import (
 ToolCallingAgent,
 CodeAgent,
@@ -7,15 +6,24 @@ tool
 )
 import os
 from dotenv import load_dotenv
-from langchain_community.document_loaders import UnstructuredFileLoader
+from langchain_openai import OpenAIEmbeddings
+from langchain_community.vectorstores import Chroma
+from langchain_community.document_loaders import TextLoader
 from langchain.text_splitter import RecursiveCharacterTextSplitter
-from langchain_community.embeddings import HuggingFaceEmbeddings
-from langchain_community.vectorstores import FAISS
+from pydantic import BaseModel, Field
+from typing import Literal
+import ast
 
-from langchain_community.document_loaders import UnstructuredFileLoader
-from langchain.text_splitter import RecursiveCharacterTextSplitter
-from langchain_community.embeddings import HuggingFaceEmbeddings
-from langchain_community.vectorstores import FAISS
+class EndpointSchema(BaseModel):
+    url: str = Field(
+        description="The URL endpoint path",
+        pattern="^/.*",  # Must start with /
+        example="/webslayer/schema/{schema_name}"
+    )
+    type: Literal["GET", "POST", "PUT", "DELETE"] = Field(
+        description="The HTTP method type",
+        example="GET"
+    )
 
 
 load_dotenv()
@@ -24,7 +32,8 @@ load_dotenv()
 @tool
 def semantic_openapi_search(filename: str, query: str) -> str:
     """
-    Performs semantic search on a specified OpenAPI document within the 'openapi_docs' directory.
+    Performs semantic search on a specified OpenAPI document within the 'openapi_docs' directory. You may call this multiple times
+     with different queries to refine results if the initial search does not yield satisfactory outcomes.
 
     Args:
         filename: The name of the OpenAPI file (e.g., 'webslayer.json') located in the 'openapi_docs' directory.
@@ -39,27 +48,43 @@ def semantic_openapi_search(filename: str, query: str) -> str:
         return f"Error: File '{filename}' not found in 'openapi_docs'."
 
     try:
-        # 1. Load the document
-        loader = UnstructuredFileLoader(file_path)
+        embedding_model = OpenAIEmbeddings(
+        model="text-embedding-3-small",
+        openai_api_key=os.getenv("OPENAI_API_KEY")
+    )
+
+        # Load the document
+        loader = TextLoader(file_path)
         documents = loader.load()
 
-        # 2. Split the document into chunks
+        # Split the document into chunks
         text_splitter = RecursiveCharacterTextSplitter(chunk_size=1000, chunk_overlap=200)
         texts = text_splitter.split_documents(documents)
 
-        # 3. Create embeddings
-        # Using a smaller, faster model suitable for CPU inference
-        model_name = "sentence-transformers/all-MiniLM-L6-v2" 
-        embeddings = HuggingFaceEmbeddings(model_name=model_name, model_kwargs={'device': 'cpu'}) # Explicitly use CPU
+        # Create a Chroma vector store FROM the documents    
+        persist_directory = 'db_chroma_similarity'
+        vectorstore = Chroma.from_documents(
+            documents=texts,
+            embedding=embedding_model,
+            persist_directory=persist_directory # Optional: Saves the index
+        )
+        print(f"Chroma vector store created with {vectorstore._collection.count()} documents.")
 
-        # 4. Create FAISS vector store
-        db = FAISS.from_documents(texts, embeddings)
+        # Create a retriever from the vector store
+        retriever = vectorstore.as_retriever(
+            search_type="similarity", # Explicitly stating, though it's often the default
+            search_kwargs={'k': 2}     # Retrieve the top 2 most similar documents
+        )
 
-        # 5. Perform similarity search
-        results = db.similarity_search(query, k=3) # Get top 3 results
+        # Perform search
+        docs = retriever.invoke(query)
 
-        # 6. Format and return results
-        return "\n\n".join([doc.page_content for doc in results])
+        return "\nRetrieved documents:\n" + "".join(
+                [
+                    f"\n\n===== Document {str(i)} =====\n" + doc.page_content
+                    for i, doc in enumerate(docs)
+                ]
+            )
 
     except Exception as e:
         return f"Error processing file '{filename}': {e}"
@@ -82,59 +107,30 @@ def ask_user_for_clarification(question: str) -> str:
     return user_response
 
 @tool
-def return_api_endpoints(query: str, openapi_context: str) -> list[dict[str, str]]:
+def validate_endpoint_format(endpoints: str) -> str:
     """
-    Selects the most relevant API endpoint(s) based on a user query and OpenAPI context.
+    Run this when you found the endpoints before returning them to validate. Parses a string containing a Python dictionary literal 
+    and validates it against the EndpointSchema.
 
     Args:
-        query: The original user query.
-        openapi_context: Relevant snippets from the OpenAPI documentation (obtained via semantic_openapi_search).
+        endpoints: A string representation of a Python dictionary expected to match EndpointSchema.
 
     Returns:
-        A list of dictionaries, where each dictionary represents a selected endpoint
-        with its URL and HTTP method, e.g., [{'url': '/webslayer/schema/', 'method': 'GET'}].
-        Returns an empty list if no suitable endpoint is found or an error occurs.
+        model dump of validated endpoints
     """
-    prompt = f"""
-    Based on the user query: "{query}"
-    And the following relevant OpenAPI documentation context:
-    ---
-    {openapi_context}
-    ---
-    Identify the most appropriate API endpoint URL and its corresponding HTTP method (e.g., GET, POST, PUT, DELETE) to fulfill the user's request.
-    Provide ONLY a JSON list containing one dictionary with 'url' and 'method' keys for the best matching endpoint.
-    Example format: [{'url': '/path/to/endpoint', 'method': 'POST'}]
-    If no single suitable endpoint can be clearly identified from the context, return an empty JSON list [].
-    """
-    try:
-        # Use the globally defined model to analyze the context and select the endpoint
-        response = model.generate([{"role": "user", "content": prompt}])
+    try: 
+        # Safely parse the string dictionary
+        parsed_dict = ast.literal_eval(endpoints)
 
-        # Extract the JSON part from the response (LLMs might add explanations)
-        # Use regex to find the list structure [...]
-        json_match = re.search(r'\[\s*\{.*?\}\s*\]', response, re.DOTALL)
-        if json_match:
-            endpoints_str = json_match.group(0)
-            endpoints = json.loads(endpoints_str)
-            # Basic validation: ensure it's a list of dicts with 'url' and 'method'
-            if isinstance(endpoints, list) and all(isinstance(item, dict) and 'url' in item and 'method' in item for item in endpoints):
-                 # Ensure method is uppercase as per HTTP standards
-                for item in endpoints:
-                    item['method'] = item.get('method', '').upper()
-                print(f"Selected endpoints: {endpoints}") # Debug print
-                return endpoints
-            else:
-                print(f"Warning: LLM response for endpoint selection was not in the expected list-of-dicts format: {endpoints_str}")
-                return []
-        else:
-            print(f"Warning: Could not extract JSON endpoint list from LLM response: {response}")
-            return []
-    except json.JSONDecodeError as e:
-        print(f"Error decoding JSON response from LLM for endpoint selection: {e}\nResponse was: {response}")
-        return []
+        if not isinstance(parsed_dict, dict):
+                raise ValueError(f"Input string did not evaluate to a Python dictionary. Expected to match EndpointSchema: {str(EndpointSchema)}")
+
+        # --- VALIDATION STEP ---
+        validated_schema = EndpointSchema(**parsed_dict)
+
+        return validated_schema.model_dump()
     except Exception as e:
-        print(f"Error during endpoint selection: {e}")
-        return []
+        return f"Expected dictionary to match EndpointSchema: {str(EndpointSchema)}. Full stacktrace: {str(e)} "
 
 
 openapi_docs = {}
@@ -150,15 +146,17 @@ then launch scraping jobs using LLMs (Ollama, Claude, OpenAI) against URLs based
 manage the resulting reports: list, retrieve, delete, or download the structured data as JSON files."""}
 
 model = LiteLLMModel(model_id="gemini/gemini-2.0-flash",
-                     api_key="")
+                     api_key=os.getenv("GEMINI_API_KEY"))
                      
 endpoint_retreiever_agent = ToolCallingAgent(
-    tools=[semantic_openapi_search, return_api_endpoints],
+    tools=[semantic_openapi_search, validate_endpoint_format],
     model=model,
     max_steps=10,
     name="endpoint_retreiever_agent",
     description="Gets appropriate endpoint to make the request. Provide it user query and the file to be searched.",
 )
+
+endpoint_retreiever_agent.prompt_templates["managed_agent"]["task"] = endpoint_retreiever_agent.prompt_templates["managed_agent"]["task"] + ".\nvalidate_endpoint_format tool expects dictionary to adhere to EndpointSchema: " + str(EndpointSchema)
 
 manager_agent = CodeAgent(
     tools=[ask_user_for_clarification],
