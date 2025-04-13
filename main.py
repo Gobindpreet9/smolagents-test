@@ -3,6 +3,7 @@ ToolCallingAgent,
 CodeAgent,
 LiteLLMModel,
 GradioUI,
+UserInputTool,
 tool
 )
 import os
@@ -170,23 +171,6 @@ def semantic_openapi_search(filename: str, query: str) -> str:
         return f"Error processing file '{filename}': {e}"
 
 @tool
-def ask_user_for_clarification(question: str) -> str:
-    """
-    Asks the user a question to clarify ambiguity or gather more information.
-    Use this when the next step is unclear, multiple options exist (e.g., multiple API endpoints),
-    or required information is missing.
-
-    Args:
-        question: The question to ask the user.
-
-    Returns:
-        The user's response as a string.
-    """
-    print(f"\n{question}")
-    user_response = input("Your response: ")
-    return user_response
-
-@tool
 def validate_endpoint_format(endpoints: str) -> str:
     """
     Run this when you found the endpoints before returning them to validate. Parses a string containing a Python dictionary literal 
@@ -239,8 +223,10 @@ endpoint_retreiever_agent = ToolCallingAgent(
 endpoint_retreiever_agent.prompt_templates["managed_agent"]["task"] = endpoint_retreiever_agent.prompt_templates["managed_agent"]["task"] + ".\nvalidate_endpoint_format tool expects dictionary to adhere to EndpointSchema: " + EndpointSchema.schema_json(indent=2)
 endpoint_retreiever_agent.prompt_templates["final_answer"]["pre_messages"] = endpoint_retreiever_agent.prompt_templates["final_answer"]["pre_messages"] + ".\nYour answer should adhere to EndpointSchema: " + EndpointSchema.schema_json(indent=2)
 
+userInputTool = UserInputTool()
+
 manager_agent = CodeAgent(
-    tools=[ask_user_for_clarification],
+    tools=[userInputTool],
     model=model,
     managed_agents=[endpoint_retreiever_agent],
 )
