@@ -3,3 +3,4 @@ venv/
 db_chroma_similarity/
 .gradio/
 db_chroma_cache/
+*/__pycache__/
