@@ -13,6 +13,8 @@ from langchain.text_splitter import RecursiveCharacterTextSplitter
 from pydantic import BaseModel, Field
 from typing import Literal
 import ast
+import hashlib
+import json
 
 class EndpointSchema(BaseModel):
     url: str = Field(
@@ -28,6 +30,39 @@ class EndpointSchema(BaseModel):
 
 load_dotenv()
 
+def get_file_hash(file_path):
+    """Calculates the SHA256 hash of a file's content."""
+    hasher = hashlib.sha256()
+    try:
+        with open(file_path, 'rb') as file:
+            while chunk := file.read(8192): # Read in chunks
+                hasher.update(chunk)
+        return hasher.hexdigest()
+    except FileNotFoundError:
+        return None
+    except Exception as e:
+        print(f"Error hashing file {file_path}: {e}")
+        return None
+
+def load_metadata(metadata_path):
+    """Loads filehash metadata from a JSON file."""
+    try:
+        if os.path.exists(metadata_path):
+            with open(metadata_path, 'r') as f:
+                return json.load(f)
+        return None
+    except Exception as e:
+        print(f"Error loading metadata {metadata_path}: {e}")
+        return None
+
+def save_metadata(metadata_path, data):
+    """Saves filehash metadata to a JSON file."""
+    try:
+        os.makedirs(os.path.dirname(metadata_path), exist_ok=True)
+        with open(metadata_path, 'w') as f:
+            json.dump(data, f)
+    except Exception as e:
+        print(f"Error saving metadata {metadata_path}: {e}")
 
 @tool
 def semantic_openapi_search(filename: str, query: str) -> str:
@@ -43,40 +78,81 @@ def semantic_openapi_search(filename: str, query: str) -> str:
         A string containing the most relevant parts of the document based on the query,
         or an error message if the file is not found or processing fails.
     """
-    file_path = os.path.join("openapi_docs", filename)
+    source_file_path = os.path.join("openapi_docs", filename)
+    persist_directory = os.path.join("db_chroma_cache", os.path.splitext(filename)[0]) # Unique dir per file
+    metadata_path = os.path.join(persist_directory, "metadata.json")
     if not os.path.exists(file_path):
         return f"Error: File '{filename}' not found in 'openapi_docs'."
 
     try:
         embedding_model = OpenAIEmbeddings(
-        model="text-embedding-3-small",
-        openai_api_key=os.getenv("OPENAI_API_KEY")
-    )
-
-        # Load the document
-        loader = TextLoader(file_path)
-        documents = loader.load()
-
-        # Split the document into chunks
-        text_splitter = RecursiveCharacterTextSplitter(chunk_size=1000, chunk_overlap=200)
-        texts = text_splitter.split_documents(documents)
-
-        # Create a Chroma vector store FROM the documents    
-        persist_directory = 'db_chroma_similarity'
-        vectorstore = Chroma.from_documents(
-            documents=texts,
-            embedding=embedding_model,
-            persist_directory=persist_directory # Optional: Saves the index
+            model="text-embedding-3-small",
+            # Ensure API key is available, e.g., via environment variable
+            # openai_api_key=os.getenv("OPENAI_API_KEY")
         )
-        print(f"Chroma vector store created with {vectorstore._collection.count()} documents.")
+
+        vectorstore = None
+        current_file_hash = get_file_hash(source_file_path)
+        if not current_file_hash:
+             return f"Error: Could not calculate hash for '{filename}'."
+
+        # Check cache validity
+        metadata = load_metadata(metadata_path)
+        cache_is_valid = False
+        if metadata and os.path.exists(persist_directory):
+            stored_hash = metadata.get("source_file_hash")
+            if stored_hash == current_file_hash:
+                cache_is_valid = True
+                print(f"Cache hit for '{filename}'. Loading existing vector store.")
+            else:
+                 print(f"Cache invalid for '{filename}'. Source file changed. Rebuilding...")
+        else:
+            print(f"Cache miss for '{filename}'. Building new vector store...")
+
+
+        if cache_is_valid:
+            # Load from existing persisted directory
+            vectorstore = Chroma(
+                persist_directory=persist_directory,
+                embedding_function=embedding_model
+            )
+            print(f"Loaded Chroma vector store with {count} documents.")
+        else:
+            print(f"Processing and embedding '{filename}'...")
+            # Load the document
+            loader = TextLoader(source_file_path)
+            documents = loader.load()
+
+            # Split the document into chunks
+            text_splitter = RecursiveCharacterTextSplitter(chunk_size=1000, chunk_overlap=200)
+            texts = text_splitter.split_documents(documents)
+
+            # Create a Chroma vector store FROM the documents and persist
+            vectorstore = Chroma.from_documents(
+                documents=texts,
+                embedding=embedding_model,
+                persist_directory=persist_directory # Saves the index
+            )
+            vectorstore.persist()
+
+            print(f"Chroma vector store created and persisted with {vectorstore._collection.count()} documents.")
+
+            # Save metadata including the new hash
+            save_metadata(metadata_path, {"source_file_hash": current_file_hash})
+
+
+        # Proceed with search using the loaded or newly created vectorstore
+        if not vectorstore:
+             return "Error: Vector store could not be loaded or created."
 
         # Create a retriever from the vector store
         retriever = vectorstore.as_retriever(
-            search_type="similarity", # Explicitly stating, though it's often the default
-            search_kwargs={'k': 2}     # Retrieve the top 2 most similar documents
+            search_type="similarity",
+            search_kwargs={'k': 2}
         )
 
         # Perform search
+        print(f"Performing search for query: '{query}'")
         docs = retriever.invoke(query)
 
         return "\nRetrieved documents:\n" + "".join(
@@ -87,6 +163,9 @@ def semantic_openapi_search(filename: str, query: str) -> str:
             )
 
     except Exception as e:
+        # TODO: Consider more specific error handling
+        import traceback
+        print(traceback.format_exc())
         return f"Error processing file '{filename}': {e}"
 
 @tool

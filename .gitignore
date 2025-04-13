@@ -1,3 +1,5 @@
 venv/
 .env
 db_chroma_similarity/
+.gradio/
+db_chroma_cache/
