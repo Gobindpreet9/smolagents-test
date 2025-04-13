@@ -67,7 +67,7 @@ def semantic_openapi_search(filename: str, query: str) -> str:
             documents = loader.load()
 
             # Split the document into chunks
-            text_splitter = RecursiveCharacterTextSplitter(chunk_size=1000, chunk_overlap=200)
+            text_splitter = RecursiveCharacterTextSplitter(chunk_size=1500, chunk_overlap=200)
             texts = text_splitter.split_documents(documents)
 
             # Create a Chroma vector store FROM the documents and persist
@@ -128,11 +128,11 @@ def validate_endpoint_format(endpoints: str) -> str:
         parsed_dict = ast.literal_eval(endpoints)
 
         if not isinstance(parsed_dict, dict):
-                raise ValueError(f"Input string did not evaluate to a Python dictionary. Expected to match EndpointSchema: {str(EndpointSchema)}")
+                raise ValueError(f"Input string did not evaluate to a Python dictionary. Expected to match EndpointSchema: {json.dumps(EndpointSchema.model_json_schema(), indent=2)}")
 
         # --- VALIDATION STEP ---
         validated_schema = EndpointSchema(**parsed_dict)
 
         return validated_schema.model_dump()
     except Exception as e:
-        return f"Expected dictionary to match EndpointSchema: {str(EndpointSchema)}. Full stacktrace: {str(e)} "
+        return f"Expected dictionary to match EndpointSchema: {json.dumps(EndpointSchema.model_json_schema(), indent=2)}. Full stacktrace: {str(e)} "
