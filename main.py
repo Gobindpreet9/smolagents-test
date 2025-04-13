@@ -2,6 +2,7 @@ from smolagents import (
 ToolCallingAgent,
 CodeAgent,
 LiteLLMModel,
+GradioUI,
 tool
 )
 import os
@@ -116,7 +117,7 @@ def semantic_openapi_search(filename: str, query: str) -> str:
                 persist_directory=persist_directory,
                 embedding_function=embedding_model
             )
-            print(f"Loaded Chroma vector store with {count} documents.")
+            print(f"Loaded Chroma vector store.")
         else:
             print(f"Processing and embedding '{filename}'...")
             # Load the document
@@ -232,10 +233,11 @@ endpoint_retreiever_agent = ToolCallingAgent(
     model=model,
     max_steps=10,
     name="endpoint_retreiever_agent",
-    description="Gets appropriate endpoint to make the request. Provide it user query and the file to be searched.",
+    description="This is an agent that gets appropriate endpoint to make the request to. Provide it user query and the file to be searched as one parameter in natural language.",
 )
 
-endpoint_retreiever_agent.prompt_templates["managed_agent"]["task"] = endpoint_retreiever_agent.prompt_templates["managed_agent"]["task"] + ".\nvalidate_endpoint_format tool expects dictionary to adhere to EndpointSchema: " + str(EndpointSchema)
+endpoint_retreiever_agent.prompt_templates["managed_agent"]["task"] = endpoint_retreiever_agent.prompt_templates["managed_agent"]["task"] + ".\nvalidate_endpoint_format tool expects dictionary to adhere to EndpointSchema: " + EndpointSchema.schema_json(indent=2)
+endpoint_retreiever_agent.prompt_templates["final_answer"]["pre_messages"] = endpoint_retreiever_agent.prompt_templates["final_answer"]["pre_messages"] + ".\nYour answer should adhere to EndpointSchema: " + EndpointSchema.schema_json(indent=2)
 
 manager_agent = CodeAgent(
     tools=[ask_user_for_clarification],
@@ -243,9 +245,7 @@ manager_agent = CodeAgent(
     managed_agents=[endpoint_retreiever_agent],
 )
 
-answer = manager_agent.run(
-    f"""User query: What endpoint should I use to get status of running job?
-
+manager_agent.prompt_templates["system_prompt"] = manager_agent.prompt_templates["system_prompt"] + f"""
     Context:
     Help user find the endpoiint they need based on user query. Endpoints are described by files as below, 
     you will see the json files with their description:
@@ -253,7 +253,6 @@ answer = manager_agent.run(
     
     Based on this information identify which file is likely to contain the endpoint needed by user. Once you know the file, use endpoint_retreiever_agent
     it will help retrieve the specific endpoint details required. Once identified, provide the endpoint details to the user.
-    """
-)
+"""
 
-print(answer)
+GradioUI(manager_agent).launch(pwa=True)
