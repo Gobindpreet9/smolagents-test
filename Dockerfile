@@ -10,14 +10,18 @@ COPY requirements.txt .
 # Install any needed packages specified in requirements.txt
 RUN pip install --no-cache-dir -r requirements.txt
 
+# Make sure smolagents is installed properly
+RUN pip install --no-cache-dir smolagents
+
 # Copy the current directory contents into the container at /app
 COPY . .
 
-# Make port 80 available to the world outside this container (if needed, not used in this script)
-# EXPOSE 80 
+# Make port 7860 available to the world outside this container (for Gradio UI)
+EXPOSE 7860
 
-# Define environment variable (placeholder, should be set during 'docker run')
-ENV OPENAI_API_KEY=your_api_key_here 
+# Define environment variables (placeholders, should be set in docker-compose or during 'docker run')
+ENV GEMINI_API_KEY=your_gemini_api_key_here
+ENV OPENAI_API_KEY=your_openai_api_key_here
 
-# Run multiagent_app.py when the container launches
-CMD ["python", "./multiagent_app.py"]
+# Run main.py when the container launches
+CMD ["python", "-u", "./main.py"]
