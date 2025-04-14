@@ -1,3 +1,4 @@
+import json
 import os
 import ast
 from smolagents import tool
@@ -7,6 +8,8 @@ from langchain_community.document_loaders import TextLoader
 from langchain.text_splitter import RecursiveCharacterTextSplitter
 from models.schemas import EndpointSchema
 from utils.file_utils import get_file_hash, load_metadata, save_metadata
+
+#TODO: Create a tool to ctrl+f into the open_api file fully and return +-30 lines
 
 @tool
 def semantic_openapi_search(filename: str, query: str) -> str:
@@ -97,7 +100,7 @@ def semantic_openapi_search(filename: str, query: str) -> str:
         # Perform search
         print(f"Performing search for query: '{query}'")
         docs = retriever.invoke(query)
-
+        #todo: increase the search content size
         return "\nRetrieved documents:\n" + "".join(
                 [
                     f"\n\n===== Document {str(i)} =====\n" + doc.page_content
@@ -114,21 +117,23 @@ def semantic_openapi_search(filename: str, query: str) -> str:
 @tool
 def validate_endpoint_format(endpoints: str) -> str:
     """
-    Run this when you found the endpoints before returning them to validate. Parses a string containing a Python dictionary literal 
-    and validates it against the EndpointSchema.
+    Run this when you found the endpoints before returning them to validate. Parses a string containing either a JSON object
+    or a Python dictionary literal and validates it against the EndpointSchema.
 
     Args:
-        endpoints: A string representation of a Python dictionary expected to match EndpointSchema.
+        endpoints: A string representation of a JSON object or Python dictionary expected to match EndpointSchema.
 
     Returns:
         model dump of validated endpoints
     """
-    try: 
-        # Safely parse the string dictionary
-        parsed_dict = ast.literal_eval(endpoints)
+    try:
+        try:
+            parsed_dict = json.loads(endpoints)
+        except json.JSONDecodeError:
+            parsed_dict = ast.literal_eval(endpoints)
 
         if not isinstance(parsed_dict, dict):
-                raise ValueError(f"Input string did not evaluate to a Python dictionary. Expected to match EndpointSchema: {json.dumps(EndpointSchema.model_json_schema(), indent=2)}")
+            raise ValueError(f"Input string did not evaluate to a dictionary. Expected to match EndpointSchema: {json.dumps(EndpointSchema.model_json_schema(), indent=2)}")
 
         # --- VALIDATION STEP ---
         validated_schema = EndpointSchema(**parsed_dict)

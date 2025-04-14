@@ -5,3 +5,4 @@ faiss-cpu
 tiktoken
 lxml # Added dependency for WebBaseLoader
 unstructured
+requests

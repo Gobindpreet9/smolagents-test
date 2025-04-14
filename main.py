@@ -4,7 +4,7 @@ from dotenv import load_dotenv
 
 # Import from our modular structure
 from utils.file_utils import load_openapi_docs
-from agents.endpoint_agents import create_endpoint_retriever_agent, create_manager_agent
+from agents.endpoint_agents import create_endpoint_retriever_agent, create_manager_agent, create_request_executor_agent
 
 # Load environment variables
 load_dotenv()
@@ -29,8 +29,11 @@ model = LiteLLMModel(
 # Create the endpoint retriever agent
 endpoint_retriever_agent = create_endpoint_retriever_agent(model)
 
+# Create request executor agent
+request_executor_agent = create_request_executor_agent(model)
+
 # Create the manager agent
-manager_agent = create_manager_agent(model, endpoint_retriever_agent, docs_path_to_endpoint_summary)
+manager_agent = create_manager_agent(model, endpoint_retriever_agent, request_executor_agent, docs_path_to_endpoint_summary)
 
 # Launch the UI
 GradioUI(manager_agent).launch()
